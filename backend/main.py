@@ -4,14 +4,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import faiss
-import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -29,8 +28,8 @@ app.add_middleware(
 UPLOAD_DIR = BASE_DIR / "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 PDF_STORE: dict[str, dict[str, Any]] = {}
+RETRIEVAL_MIN_SCORE = 0.03
 
 PDF_CONSTRAINED_SYSTEM_PROMPT = """
 You are a PDF-constrained chatbot.
@@ -86,15 +85,11 @@ def chunk_pages(
     return chunks
 
 
-def build_index(chunks: list[dict[str, Any]]) -> faiss.IndexFlatIP:
+def build_index(chunks: list[dict[str, Any]]) -> dict[str, Any]:
     texts = [chunk["text"] for chunk in chunks]
-    embeddings = embedding_model.encode(texts)
-    embeddings = np.array(embeddings).astype("float32")
-    faiss.normalize_L2(embeddings)
-
-    index = faiss.IndexFlatIP(embeddings.shape[1])
-    index.add(embeddings)
-    return index
+    vectorizer = TfidfVectorizer(stop_words="english")
+    matrix = vectorizer.fit_transform(texts)
+    return {"vectorizer": vectorizer, "matrix": matrix}
 
 
 def retrieve_chunks(pdf_id: str, question: str, limit: int = 4) -> list[dict[str, Any]]:
@@ -102,15 +97,14 @@ def retrieve_chunks(pdf_id: str, question: str, limit: int = 4) -> list[dict[str
     index = stored_pdf["index"]
     chunks = stored_pdf["chunks"]
 
-    query_embedding = embedding_model.encode([question])
-    query_embedding = np.array(query_embedding).astype("float32")
-    faiss.normalize_L2(query_embedding)
-
-    scores, indices = index.search(query_embedding, limit)
+    query_vector = index["vectorizer"].transform([question])
+    scores = cosine_similarity(query_vector, index["matrix"])[0]
+    ranked_indices = scores.argsort()[::-1][:limit]
 
     results = []
-    for score, chunk_index in zip(scores[0], indices[0]):
-        if chunk_index == -1:
+    for chunk_index in ranked_indices:
+        score = scores[chunk_index]
+        if score <= 0:
             continue
 
         chunk = chunks[chunk_index]
@@ -206,7 +200,7 @@ async def chat_with_pdf(pdf_id: str = Form(...), question: str = Form(...)):
     retrieved_context = retrieve_chunks(pdf_id, question)
     best_score = retrieved_context[0]["score"] if retrieved_context else 0
 
-    if best_score < 0.2:
+    if best_score < RETRIEVAL_MIN_SCORE:
         return {
             "answer": "I cannot find this information in the provided PDF.",
             "citations": [],
