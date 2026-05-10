@@ -23,6 +23,32 @@ Run the backend:
 python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
+## Render Deployment
+
+Set the Python version to `3.11` with the committed `.python-version` file.
+
+If your Render service uses the repository root as its root directory:
+
+```bash
+# Build command
+pip install -r requirements.txt
+
+# Start command
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+If your Render service root directory is `backend`:
+
+```bash
+# Build command
+pip install -r requirements.txt
+
+# Start command
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+Add `GROQ_API_KEY` in Render's environment variables.
+
 ## Frontend
 
 ```bash
